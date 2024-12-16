@@ -1,73 +1,97 @@
+import tensorflow as tf
 import pandas as pd
 import numpy as np
-import tensorflow as tf
-from keras.models import Sequential
-from keras.layers import LSTM, Dense
-from tensorflow.keras.preprocessing.sequence import TimeseriesGenerator
 import plotly.graph_objs as go
 import matplotlib.pyplot as plt
 
-# Load dataset
+# Load and preprocess data
 filename = "TSLA.csv"
 df = pd.read_csv(filename)
+print(df.info())
+print(df.describe())
 
-# Data preprocessing
+# Drop unnecessary columns
 df.drop(columns=['Open', 'High', 'Low', 'Adj Close', 'Volume'], inplace=True)
-close_data = df['Close'].values.reshape((-1, 1))
 
-# Split data into training and testing sets
+# Data preparation
+close_data = df['Close'].values.reshape((-1, 1))
 split_percent = 0.80
 split = int(split_percent * len(close_data))
 
-close_train, close_test = close_data[:split], close_data[split:]
-date_train, date_test = df['Date'][:split], df['Date'][split:]
+close_train = close_data[:split]
+close_test = close_data[split:]
 
-# Generate time series data
-look_back = 31
-train_generator = TimeseriesGenerator(close_train, close_train, length=look_back, batch_size=20)
-test_generator = TimeseriesGenerator(close_test, close_test, length=look_back, batch_size=1)
+date_train = df['Date'][:split]
+date_test = df['Date'][split:]
 
-# Build the LSTM model
-model = Sequential([
-    LSTM(10, activation='relu', input_shape=(look_back, 1)),
-    Dense(1)
+look_back = 31  # Number of timesteps to look back
+
+# Create TensorFlow time series datasets
+train_dataset = tf.keras.utils.timeseries_dataset_from_array(
+    data=close_train,
+    targets=close_train[look_back:],
+    sequence_length=look_back,
+    batch_size=20,
+)
+
+test_dataset = tf.keras.utils.timeseries_dataset_from_array(
+    data=close_test,
+    targets=close_test[look_back:],
+    sequence_length=look_back,
+    batch_size=1,
+)
+
+# Build LSTM model
+model = tf.keras.Sequential([
+    tf.keras.layers.LSTM(10, activation='relu', input_shape=(look_back, 1)),
+    tf.keras.layers.Dense(1)
 ])
 
-model.compile(loss='mean_squared_error', optimizer='adam')
-model.fit(train_generator, epochs=150, verbose=1)
+model.compile(optimizer='adam', loss='mean_squared_error')
+
+# Train the model
+num_epochs = 150
+model.fit(train_dataset, epochs=num_epochs, verbose=1)
 
 # Make predictions
-prediction = model.predict(test_generator)
+predictions = model.predict(test_dataset)
+
+# Flatten the arrays for visualization
 close_train = close_train.flatten()
 close_test = close_test.flatten()
-prediction = prediction.flatten()
+predictions = predictions.flatten()
 
-# Plot training vs prediction
-trace1 = go.Scatter(x=date_train, y=close_train, mode='lines', name='Data')
-trace2 = go.Scatter(x=date_test, y=prediction, mode='lines', name='Prediction')
+# Plot the results
+trace1 = go.Scatter(x=date_train, y=close_train, mode='lines', name='Training Data')
+trace2 = go.Scatter(x=date_test, y=predictions, mode='lines', name='Predictions')
 trace3 = go.Scatter(x=date_test, y=close_test, mode='lines', name='Ground Truth')
 
-layout = go.Layout(title="Tesla Stock Prediction", xaxis={'title': "Date"}, yaxis={'title': "Close"})
+layout = go.Layout(title="Tesla Stock Price Prediction",
+                   xaxis={'title': "Date"},
+                   yaxis={'title': "Close Price"})
+
 fig = go.Figure(data=[trace1, trace2, trace3], layout=layout)
 fig.show()
 
-# Forecast next 30 days
-def predict_future(num_prediction, model, data, look_back):
-    prediction_list = data[-look_back:]
+# Forecast future values
+def forecast_future(num_prediction, model, close_data, look_back):
+    input_sequence = close_data[-look_back:]
+    predictions = []
+
     for _ in range(num_prediction):
-        x = prediction_list[-look_back:].reshape((1, look_back, 1))
-        out = model.predict(x)[0][0]
-        prediction_list = np.append(prediction_list, out)
-    return prediction_list[look_back-1:]
+        input_sequence = input_sequence.reshape((1, look_back, 1))
+        next_prediction = model.predict(input_sequence)[0][0]
+        predictions.append(next_prediction)
+        input_sequence = np.append(input_sequence[0][1:], next_prediction).reshape((look_back, 1))
 
-def generate_future_dates(start_date, num_days):
-    return pd.date_range(start=start_date, periods=num_days).tolist()
+    return predictions
 
+# Predict the next 30 days
 num_prediction = 30
-forecast = predict_future(num_prediction, model, close_data, look_back)
-forecast_dates = generate_future_dates(date_test.iloc[-1], num_prediction)
+future_predictions = forecast_future(num_prediction, model, close_data, look_back)
+future_dates = pd.date_range(start=date_test.iloc[-1], periods=num_prediction + 1).tolist()
 
-# Plot forecast
-trace4 = go.Scatter(x=forecast_dates, y=forecast, mode='lines', name='Forecast')
+# Add forecast to the plot
+trace4 = go.Scatter(x=future_dates, y=future_predictions, mode='lines', name='Forecast')
 fig.add_trace(trace4)
 fig.show()
